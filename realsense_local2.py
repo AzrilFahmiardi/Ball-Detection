@@ -32,8 +32,8 @@ def calculate_3d_position(camera_matrix, center, depth):
     x_pixel, y_pixel = center  # Koordinat pusat bola di frame
     fx, fy, cx, cy = camera_matrix[0, 0], camera_matrix[1, 1], camera_matrix[0, 2], camera_matrix[1, 2]
     
-    z = depth / 10.0  # Konversi ke centimeter
-    x_camera = (x_pixel - cx) * z / fx
+    z = depth / 1000.0  # Konversi ke centimeter
+    x_camera = (cx - x_pixel) * z / fx
     y_camera = (cy - y_pixel) * z / fy
     
     return np.array([z, x_camera, y_camera])
@@ -109,11 +109,11 @@ while True:
     if ball_detected:
         cv2.circle(result, center, radius, (0, 255, 0), 2)
         # Tampilkan posisi z, x, y, dan jarak bola
-        cv2.putText(result, f"x: {ball_3d[1]:.2f} cm", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        cv2.putText(result, f"y: {ball_3d[2]:.2f} cm", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(result, f"x: {ball_3d[0]:.2f} m", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        cv2.putText(result, f"y: {ball_3d[1]:.2f} m", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         # Print untuk debugging
-        print(f"x: {ball_3d[1]:.2f} cm, y: {ball_3d[2]:.2f} cm")
+        print(f"x: {ball_3d[0]:.2f} m, y: {ball_3d[1]:.2f} m")
     cv2.imshow('Result with Circle, Distance, and Position', result)
     cv2.imshow('Mask', mask)
     cv2.imshow('Original', color_image)
