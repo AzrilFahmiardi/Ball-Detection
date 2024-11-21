@@ -1,117 +1,126 @@
-#include <opencv2/opencv.hpp>
 #include <librealsense2/rs.hpp>
+#include <opencv2/opencv.hpp>
 #include <iostream>
-#include <vector>
+
+using namespace cv;
+using namespace std;
+
+// Parameter deteksi warna oranye untuk bola RoboCup (rentang diperlebar)
+Scalar lower_orange(0, 120, 100);
+Scalar upper_orange(20, 255, 255);
+
+// Elemen struktural untuk operasi morfologi
+Mat kernel = getStructuringElement(MORPH_ELLIPSE, Size(5, 5));
+
+// Informasi intrinsik kamera (diperoleh dari proses kalibrasi)
+Mat camera_matrix = (Mat_<double>(3, 3) << 607.1673, 0, 319.5, 0, 607.1673, 239.5, 0, 0, 1);
+Mat distortion_coeffs = (Mat_<double>(1, 5) << -0.0461, 0.1772, 0, 0, -0.2892);
+
+// Fungsi untuk menghitung koordinat 3D bola dalam sistem koordinat kamera
+Vec3f calculate_3d_position(const Mat& camera_matrix, const Point& center, float depth) {
+    double fx = camera_matrix.at<double>(0, 0);
+    double fy = camera_matrix.at<double>(1, 1);
+    double cx = camera_matrix.at<double>(0, 2);
+    double cy = camera_matrix.at<double>(1, 2);
+
+    double z = depth / 1000.0;  // Konversi ke meter
+    double x_camera = (cx - center.x) * z / fx;
+    double y_camera = (cy - center.y) * z / fy;
+
+    return Vec3f(z, x_camera, y_camera);
+}
+
+// Fungsi untuk menghitung jarak horizontal bola dari kamera
+float calculate_ground_distance(float z) {
+    return z;
+}
 
 int main() {
-    // Inisialisasi pipeline RealSense
-    rs2::pipeline p;
-    rs2::config cfg;
+    // Konfigurasi pipeline RealSense
+    rs2::pipeline pipeline;
+    rs2::config config;
+    config.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
+    config.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
+    pipeline.start(config);
 
-    // Enable depth and color stream
-    cfg.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 30);
-    cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
-
-    // Start pipeline
-    p.start(cfg);
-
-    // Create alignment object to align depth frame to color frame
-    rs2::align align_to_color(RS2_STREAM_COLOR);
-
-    // Warna oranye untuk bola RoboCup
-    cv::Scalar lower_orange(0, 120, 100);   // Lebih rendah untuk variasi pencahayaan
-    cv::Scalar upper_orange(20, 255, 255);  // Lebih tinggi untuk toleransi
-
-    // Elemen struktural untuk operasi morfologi
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-
-    // Kamera matrix dan koefisien distorsi
-    cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << 607.1673, 0, 319.5,
-                                                      0, 607.1673, 239.5,
-                                                      0, 0, 1);
-    cv::Mat distortion_coeffs = (cv::Mat_<double>(1, 5) << -0.0461, 0.1772, 0, 0, -0.2892);
+    // Align depth frame ke color frame
+    rs2::align align(RS2_STREAM_COLOR);
 
     while (true) {
-        // Menunggu dan mengambil frame dari pipeline
-        rs2::frameset frames = p.wait_for_frames();
-        rs2::frameset aligned_frames = align_to_color.process(frames);
+        // Baca frame dari kamera RealSense
+        rs2::frameset frames = pipeline.wait_for_frames();
+        rs2::frameset aligned_frames = align.process(frames);
+        rs2::video_frame color_frame = aligned_frames.get_color_frame();
+        rs2::depth_frame depth_frame = aligned_frames.get_depth_frame();
+        if (!color_frame || !depth_frame)
+            continue;
 
-        // Mengambil frame warna dan depth
-        rs2::frame color_frame = aligned_frames.get_color_frame();
-        rs2::frame depth_frame = aligned_frames.get_depth_frame();
-
-        // Konversi frame ke cv::Mat
-        cv::Mat color_image(cv::Size(640, 480), CV_8UC3, (void*)color_frame.get_data());
-        cv::Mat depth_image(cv::Size(640, 480), CV_16UC1, (void*)depth_frame.get_data());
+        // Konversi frame ke OpenCV Mat
+        Mat color_image(Size(640, 480), CV_8UC3, (void*)color_frame.get_data(), Mat::AUTO_STEP);
+        Mat depth_image(Size(640, 480), CV_16UC1, (void*)depth_frame.get_data(), Mat::AUTO_STEP);
 
         // Preprocessing
-        cv::GaussianBlur(color_image, color_image, cv::Size(5, 5), 0);
+        GaussianBlur(color_image, color_image, Size(5, 5), 0);
 
         // Konversi ke HSV
-        cv::Mat hsv;
-        cv::cvtColor(color_image, hsv, cv::COLOR_BGR2HSV);
+        Mat hsv;
+        cvtColor(color_image, hsv, COLOR_BGR2HSV);
 
         // Masking untuk warna oranye
-        cv::Mat mask;
-        cv::inRange(hsv, lower_orange, upper_orange, mask);
-        cv::erode(mask, mask, kernel);
-        cv::dilate(mask, mask, kernel);
+        Mat mask;
+        inRange(hsv, lower_orange, upper_orange, mask);
+        erode(mask, mask, kernel);
+        dilate(mask, mask, kernel);
 
-        // Mencari kontur
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        // Mencari contours
+        vector<vector<Point>> contours;
+        findContours(mask, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
 
-        // Variabel untuk menyimpan informasi bola
+        // Inisialisasi variabel untuk menyimpan informasi bola
         bool ball_detected = false;
-        cv::Point2f center;
-        float radius = 0;
-        float z_distance = 0;
+        Vec3f ball_3d;
+        float ground_distance = 0.0;
 
         if (!contours.empty()) {
-            // Ambil kontur terbesar
-            std::vector<cv::Point> max_contour = *std::max_element(contours.begin(), contours.end(),
-                                                                   [](const std::vector<cv::Point>& a, const std::vector<cv::Point>& b) {
-                                                                       return cv::contourArea(a) < cv::contourArea(b);
-                                                                   });
+            // Mengambil kontur terbesar
+            auto c = max_element(contours.begin(), contours.end(), [](const vector<Point>& a, const vector<Point>& b) {
+                return contourArea(a) < contourArea(b);
+            });
 
-            // Hitung area, radius, dan center
-            float area = cv::contourArea(max_contour);
-            if (area > 100) {  // Filter berdasarkan luas area kontur
-                // Hitung lingkaran pembatas
-                cv::minEnclosingCircle(max_contour, center, radius);
+            double area = contourArea(*c);
+            if (area > 100) {
+                Point2f center;
+                float radius;
+                minEnclosingCircle(*c, center, radius);
 
                 // Ambil jarak dari depth image
-                int x = static_cast<int>(center.x);
-                int y = static_cast<int>(center.y);
-                z_distance = depth_image.at<uint16_t>(y, x) / 10.0f;  // Konversi ke cm
+                float distance = depth_frame.get_distance(center.x, center.y);
 
-                // Hanya lanjutkan jika jarak valid
-                if (z_distance > 0) {
-                    // Menandakan bola terdeteksi
+                if (distance > 0) {
+                    ball_3d = calculate_3d_position(camera_matrix, center, distance * 1000);
+                    ground_distance = calculate_ground_distance(ball_3d[0]);
                     ball_detected = true;
                 }
             }
         }
 
-        // Menampilkan hasil
-        cv::Mat result = color_image.clone();
+        Mat result = color_image.clone();
         if (ball_detected) {
-            cv::circle(result, center, static_cast<int>(radius), cv::Scalar(0, 255, 0), 2);
-            cv::putText(result, "Z: " + std::to_string(z_distance) + " cm", cv::Point(10, 50), cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 0), 2);
+            circle(result, Point(ball_3d[1], ball_3d[2]), (int)ball_3d[0], Scalar(0, 255, 0), 2);
+            putText(result, "x: " + to_string(ball_3d[0]) + " m", Point(10, 30), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 0), 2);
+            putText(result, "y: " + to_string(ball_3d[1]) + " m", Point(10, 50), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 255, 0), 2);
+            cout << "x: " << ball_3d[0] << " m, y: " << ball_3d[1] << " m" << endl;
         }
 
-        cv::imshow("Result", result);
-        cv::imshow("Mask", mask);
+        imshow("Result with Circle, Distance, and Position", result);
+        imshow("Mask", mask);
+        imshow("Original", color_image);
 
-        // Keluar jika tekan 'q'
-        if (cv::waitKey(1) == 'q') {
+        if (waitKey(1) == 'q')
             break;
-        }
     }
 
-    // Hentikan pipeline dan tutup jendela
-    p.stop();
-    cv::destroyAllWindows();
-
+    pipeline.stop();
+    destroyAllWindows();
     return 0;
 }
