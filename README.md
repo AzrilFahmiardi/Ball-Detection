@@ -1,3 +1,3 @@
 ## Demo
 
-![Demo](assets/ball_detction_demo.gif)
+![Demo](assets/ball_detection_demo.gif)
